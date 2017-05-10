@@ -24,6 +24,22 @@
           "Value": "/var/log/contiv"
        },
        {
+          "Description": "Replicast GW VLAN uplink interface used by OVS",
+          "Name": "iflist_repgw",
+          "Settable": [
+             "value"
+          ],
+          "Value": ""
+       },
+       {
+          "Description": "Replicast VLAN uplink interface used by OVS",
+          "Name": "iflist_rep",
+          "Settable": [
+             "value"
+          ],
+          "Value": ""
+       },
+       {
           "Description": "VLAN uplink interface used by OVS",
           "Name": "iflist",
           "Settable": [
@@ -109,7 +125,7 @@
        {
           "type": "bind",
           "options": ["rbind"],
-          "source": "/etc/openvswitch",
+          "source": "/opt/nedge/etc/openvswitch",
           "destination": "/etc/openvswitch"
        },
        {
@@ -117,6 +133,12 @@
           "options": ["rbind"],
           "source": "/var/log",
           "destination": "/var/log"
+       },
+       {
+          "type": "bind",
+          "options": ["rbind"],
+          "source": "/opt/nedge/var/lib/etcd.data",
+          "destination": "/etcd.data"
        },
        {
           "type": "bind",

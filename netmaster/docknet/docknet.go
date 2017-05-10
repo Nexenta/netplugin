@@ -182,6 +182,7 @@ func CreateDockNet(tenantName, networkName, serviceName string, nwCfg *mastercfg
 			IPAM:           &ipamCfg,
 			Options:        netPluginOptions,
 			Attachable:     true,
+			EnableIPv6:	true,
 		}
 
 		log.Infof("Creating docker network: %+v", nwCreate)

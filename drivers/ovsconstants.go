@@ -16,6 +16,8 @@ const (
 	portTable       = "Port"
 	interfaceTable  = "Interface"
 	vlanBridgeName  = "contivVlanBridge"
+	repVlanBridgeName  = "nedge_rep"
+	repgwVlanBridgeName  = "nedge_repgw"
 	vxlanBridgeName = "contivVxlanBridge"
 	portNameFmt     = "port%d"
 	vxlanIfNameFmt  = "vxif%s"

@@ -36,7 +36,7 @@ import (
 type oper int
 
 const (
-	maxIntfRetry = 100
+	maxIntfRetry = 1000
 	hostPortName = "contivh0"
 )
 
@@ -163,7 +163,8 @@ func (d *OvsDriver) Init(info *core.InstanceInfo) error {
 		}
 	}
 
-	log.Infof("Initializing ovsdriver")
+	log.Infof("Initializing ovsdriver: vlan uplink=%s, repvlan uplink=%s repgwvlan uplink=%s",
+	    info.UplinkIntf, info.RepUplinkIntf, info.RepgwUplinkIntf)
 
 	// Init switch DB
 	d.switchDb = make(map[string]*OvsSwitch)
@@ -180,12 +181,26 @@ func (d *OvsDriver) Init(info *core.InstanceInfo) error {
 	if err != nil {
 		log.Fatalf("Error creating vlan switch. Err: %v", err)
 	}
+	// Create NE Replicast switch
+	d.switchDb["repvlan"], err = NewOvsSwitch(repVlanBridgeName, "vlan", info.VtepIP,
+		info.FwdMode, info.RepUplinkIntf, info.HostPvtNW, info.VxlanUDPPort)
+	if err != nil {
+		log.Fatalf("Error creating repvlan switch. Err: %v", err)
+	}
+	// Create NE Replicast GW switch
+	d.switchDb["repgwvlan"], err = NewOvsSwitch(repgwVlanBridgeName, "vlan", info.VtepIP,
+		info.FwdMode, info.RepgwUplinkIntf, info.HostPvtNW, info.VxlanUDPPort)
+	if err != nil {
+		log.Fatalf("Error creating repgwvlan switch. Err: %v", err)
+	}
 
 	// Add name server
 	d.nameServer = new(nameserver.NetpluginNameServer)
 	d.nameServer.Init(info.StateDriver)
 	d.switchDb["vxlan"].AddNameServer(d.nameServer)
 	d.switchDb["vlan"].AddNameServer(d.nameServer)
+	d.switchDb["repvlan"].AddNameServer(d.nameServer)
+	d.switchDb["repgwvlan"].AddNameServer(d.nameServer)
 	log.Infof("initialized nameserver")
 
 	// Add uplink to VLAN switch
@@ -193,6 +208,24 @@ func (d *OvsDriver) Init(info *core.InstanceInfo) error {
 		err = d.switchDb["vlan"].AddUplink("uplinkPort", info.UplinkIntf)
 		if err != nil {
 			log.Errorf("Could not add uplink %v to vlan OVS. Err: %v", info.UplinkIntf, err)
+		}
+	}
+
+	// Add uplink to Replicast VLAN switch
+	if len(info.RepUplinkIntf) != 0 {
+		err = d.switchDb["repvlan"].AddUplink("repUplinkPort", info.RepUplinkIntf)
+		if err != nil {
+			log.Errorf("Could not add Replicast uplink %v to vlan OVS. Err: %v",
+			    info.RepUplinkIntf, err)
+		}
+	}
+
+	// Add uplink to Replicast GW VLAN switch
+	if len(info.RepgwUplinkIntf) != 0 {
+		err = d.switchDb["repgwvlan"].AddUplink("repgwUplinkPort", info.RepgwUplinkIntf)
+		if err != nil {
+			log.Errorf("Could not add Replicast GW uplink %v to vlan OVS. Err: %v",
+			    info.RepgwUplinkIntf, err)
 		}
 	}
 
@@ -268,6 +301,14 @@ func (d *OvsDriver) Deinit() {
 		d.switchDb["vxlan"].DelHostPort(hostPortName, true)
 		d.switchDb["vxlan"].Delete()
 	}
+	if d.switchDb["repvlan"] != nil {
+		d.switchDb["repvlan"].DelHostPort(hostPortName, true)
+		d.switchDb["repvlan"].Delete()
+	}
+	if d.switchDb["repgwvlan"] != nil {
+		d.switchDb["repgwvlan"].DelHostPort(hostPortName, true)
+		d.switchDb["repgwvlan"].Delete()
+	}
 }
 
 // CreateNetwork creates a network by named identifier
@@ -288,12 +329,24 @@ func (d *OvsDriver) CreateNetwork(id string) error {
 	} else {
 		sw = d.switchDb["vlan"]
 	}
+	if strings.Index(cfgNw.NetworkName, "repgw") == 0 {
+		sw = d.switchDb["repgwvlan"]
+	} else if strings.Index(cfgNw.NetworkName, "rep") == 0 {
+		sw = d.switchDb["repvlan"]
+	}
 
 	return sw.CreateNetwork(uint16(cfgNw.PktTag), uint32(cfgNw.ExtPktTag), cfgNw.Gateway, cfgNw.Tenant)
 }
 
 // DeleteNetwork deletes a network by named identifier
 func (d *OvsDriver) DeleteNetwork(id, nwType, encap string, pktTag, extPktTag int, gateway string, tenant string) error {
+	cfgNw := mastercfg.CfgNetworkState{}
+	cfgNw.StateDriver = d.oper.StateDriver
+	err := cfgNw.Read(id)
+	if err != nil {
+		log.Errorf("Failed to read net %s \n", cfgNw.ID)
+		return err
+	}
 	log.Infof("delete net %s, nwType %s, encap %s, tags: %d/%d", id, nwType, encap, pktTag, extPktTag)
 
 	// Find the switch based on network type
@@ -302,6 +355,11 @@ func (d *OvsDriver) DeleteNetwork(id, nwType, encap string, pktTag, extPktTag in
 		sw = d.switchDb["vxlan"]
 	} else {
 		sw = d.switchDb["vlan"]
+	}
+	if strings.Index(cfgNw.NetworkName, "repgw") == 0 {
+		sw = d.switchDb["repgwvlan"]
+	} else if strings.Index(cfgNw.NetworkName, "rep") == 0 {
+		sw = d.switchDb["repvlan"]
 	}
 
 	// Delete infra nw endpoint if present
@@ -381,6 +439,11 @@ func (d *OvsDriver) CreateEndpoint(id string) error {
 		sw = d.switchDb["vxlan"]
 	} else {
 		sw = d.switchDb["vlan"]
+	}
+	if strings.Index(cfgNw.NetworkName, "repgw") == 0 {
+		sw = d.switchDb["repgwvlan"]
+	} else if strings.Index(cfgNw.NetworkName, "rep") == 0 {
+		sw = d.switchDb["repvlan"]
 	}
 
 	// Skip Veth pair creation for infra nw endpoints
@@ -542,6 +605,11 @@ func (d *OvsDriver) DeleteEndpoint(id string) error {
 	} else {
 		sw = d.switchDb["vlan"]
 	}
+	if strings.Index(cfgNw.NetworkName, "repgw") == 0 {
+		sw = d.switchDb["repgwvlan"]
+	} else if strings.Index(cfgNw.NetworkName, "rep") == 0 {
+		sw = d.switchDb["repvlan"]
+	}
 
 	skipVethPair := (cfgNw.NwType == "infra")
 	err = sw.DeletePort(&epOper, skipVethPair)
@@ -616,6 +684,14 @@ func (d *OvsDriver) AddMaster(node core.ServiceInfo) error {
 	if err != nil {
 		return err
 	}
+	err = d.switchDb["repvlan"].AddMaster(node)
+	if err != nil {
+		return err
+	}
+	err = d.switchDb["repgwvlan"].AddMaster(node)
+	if err != nil {
+		return err
+	}
 	return d.switchDb["vxlan"].AddMaster(node)
 }
 
@@ -625,6 +701,14 @@ func (d *OvsDriver) DeleteMaster(node core.ServiceInfo) error {
 
 	// Delete master from vlan and vxlan datapaths
 	err := d.switchDb["vlan"].DeleteMaster(node)
+	if err != nil {
+		return err
+	}
+	err = d.switchDb["repvlan"].DeleteMaster(node)
+	if err != nil {
+		return err
+	}
+	err = d.switchDb["repgwvlan"].DeleteMaster(node)
 	if err != nil {
 		return err
 	}
@@ -747,6 +831,18 @@ func (d *OvsDriver) GetEndpointStats() ([]byte, error) {
 		return []byte{}, err
 	}
 
+	repvlanStats, err := d.switchDb["repvlan"].GetEndpointStats()
+	if err != nil {
+		log.Errorf("Error getting repvlan stats. Err: %v", err)
+		return []byte{}, err
+	}
+
+	repgwvlanStats, err := d.switchDb["repgwvlan"].GetEndpointStats()
+	if err != nil {
+		log.Errorf("Error getting repgwvlan stats. Err: %v", err)
+		return []byte{}, err
+	}
+
 	vlanStats, err := d.switchDb["vlan"].GetEndpointStats()
 	if err != nil {
 		log.Errorf("Error getting vlan stats. Err: %v", err)
@@ -755,6 +851,12 @@ func (d *OvsDriver) GetEndpointStats() ([]byte, error) {
 
 	// combine the maps
 	for key, val := range vxlanStats {
+		vlanStats[key] = val
+	}
+	for key, val := range repvlanStats {
+		vlanStats[key] = val
+	}
+	for key, val := range repgwvlanStats {
 		vlanStats[key] = val
 	}
 
@@ -777,6 +879,18 @@ func (d *OvsDriver) InspectState() ([]byte, error) {
 		return []byte{}, err
 	}
 
+	// get repvlan switch state
+	repvlanState, err := d.switchDb["repvlan"].InspectState()
+	if err != nil {
+		return []byte{}, err
+	}
+
+	// get repgwvlan switch state
+	repgwvlanState, err := d.switchDb["repgwvlan"].InspectState()
+	if err != nil {
+		return []byte{}, err
+	}
+
 	// get vxlan switch state
 	vxlanState, err := d.switchDb["vxlan"].InspectState()
 	if err != nil {
@@ -786,6 +900,8 @@ func (d *OvsDriver) InspectState() ([]byte, error) {
 	// build the map
 	driverState["vlan"] = vlanState
 	driverState["vxlan"] = vxlanState
+	driverState["repvlan"] = repvlanState
+	driverState["repgwvlan"] = repgwvlanState
 
 	// json marshall the map
 	jsonState, err := json.Marshal(driverState)

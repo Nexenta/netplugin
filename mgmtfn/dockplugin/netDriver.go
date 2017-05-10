@@ -45,7 +45,12 @@ const defaultTenantName = "default"
 func getCapability(w http.ResponseWriter, r *http.Request) {
 	logEvent("getCapability")
 
-	content, err := json.Marshal(api.GetCapabilityResponse{Scope: "global"})
+	scope := "local"
+	if pluginMode == "swarm-mode" {
+		scope = "global"
+	}
+
+	content, err := json.Marshal(api.GetCapabilityResponse{Scope: scope})
 	if err != nil {
 		httpError(w, "Could not generate getCapability response", err)
 		return
@@ -322,15 +327,20 @@ func join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	prefix := "eth"
+	if strings.Index(netName, "rep") == 0 {
+		prefix = "rep"
+	}
+
 	joinResp := api.JoinResponse{
 		InterfaceName: &api.InterfaceName{
 			SrcName:   ep.PortName,
-			DstPrefix: "eth",
+			DstPrefix: prefix,
 		},
 		Gateway: nw.Gateway,
 	}
 
-	log.Infof("Sending JoinResponse: {%+v}, InterfaceName: %s", joinResp, ep.PortName)
+	log.Infof("Sending JoinResponse: netName: %s, {%+v}, InterfaceName: %s, prefix: %s", joinResp, ep.PortName, prefix)
 
 	content, err = json.Marshal(joinResp)
 	if err != nil {

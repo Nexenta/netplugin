@@ -37,13 +37,21 @@ import (
 
 const (
 	useVethPair      = true
-	vxlanEndpointMtu = 1450
+	vxlanEndpointMtu = 8950
 	vxlanOfnetPort   = 9002
 	vlanOfnetPort    = 9003
 	unusedOfnetPort  = 9004
+	repVlanOfnetPort = 9005
+	repVxlanOfnetPort = 9006
+	repgwVlanOfnetPort = 9007
+	repgwVxlanOfnetPort = 9008
 	vxlanCtrlerPort  = 6633
 	vlanCtrlerPort   = 6634
 	hostCtrlerPort   = 6635
+	repVlanCtrlerPort= 6636
+	repVxlanCtrlerPort= 6637
+	repgwVlanCtrlerPort= 6638
+	repgwVxlanCtrlerPort= 6639
 	hostVLAN         = 2
 )
 
@@ -93,7 +101,7 @@ func NewOvsSwitch(bridgeName, netType, localIP, fwdMode string,
 	var err error
 	var datapath string
 	var ofnetPort, ctrlrPort uint16
-	log.Infof("Received request to create new ovs switch bridge:%s, localIP:%s, fwdMode:%s", bridgeName, localIP, fwdMode)
+	log.Infof("Received request to create new ovs switch bridge:%s, localIP:%s, fwdMode:%s, netType:%s", bridgeName, localIP, fwdMode, netType)
 	sw := new(OvsSwitch)
 	sw.bridgeName = bridgeName
 	sw.netType = netType
@@ -111,6 +119,13 @@ func NewOvsSwitch(bridgeName, netType, localIP, fwdMode string,
 	if netType == "vxlan" {
 		ofnetPort = vxlanOfnetPort
 		ctrlrPort = vxlanCtrlerPort
+		if strings.Index(bridgeName, "nedge_repgw") == 0 {
+			ofnetPort = repgwVxlanOfnetPort
+			ctrlrPort = repgwVxlanCtrlerPort
+		} else if strings.Index(bridgeName, "nedge_rep") == 0 {
+			ofnetPort = repVxlanOfnetPort
+			ctrlrPort = repVxlanCtrlerPort
+		}
 		switch fwdMode {
 		case "bridge":
 			datapath = "vxlan"
@@ -132,6 +147,13 @@ func NewOvsSwitch(bridgeName, netType, localIP, fwdMode string,
 	} else if netType == "vlan" {
 		ofnetPort = vlanOfnetPort
 		ctrlrPort = vlanCtrlerPort
+		if strings.Index(bridgeName, "nedge_repgw") == 0 {
+			ofnetPort = repgwVlanOfnetPort
+			ctrlrPort = repgwVlanCtrlerPort
+		} else if strings.Index(bridgeName, "nedge_rep") == 0 {
+			ofnetPort = repVlanOfnetPort
+			ctrlrPort = repVlanCtrlerPort
+		}
 		switch fwdMode {
 		case "bridge":
 			datapath = "vlan"
@@ -325,6 +347,11 @@ func (sw *OvsSwitch) CreatePort(intfName string, cfgEp *mastercfg.CfgEndpointSta
 		}
 		vethCreated = true
 
+		err = setLinkMtu(ovsPortName, 9000)
+		if err != nil {
+			log.Errorf("Error setting link %s mtu while creating Veth pair. Err: %v", ovsPortName, err)
+		}
+
 		// Set the OVS side of the port as up
 		err = setLinkUp(ovsPortName)
 		if err != nil {
@@ -356,13 +383,15 @@ func (sw *OvsSwitch) CreatePort(intfName string, cfgEp *mastercfg.CfgEndpointSta
 	// Wait a little for OVS to create the interface
 	time.Sleep(300 * time.Millisecond)
 
-	// Set the link mtu to 1450 to allow for 50 bytes vxlan encap
+	// Set the link mtu to 8950 to allow for 50 bytes vxlan encap
 	// (inner eth header(14) + outer IP(20) outer UDP(8) + vxlan header(8))
 	err = setLinkMtu(intfName, vxlanEndpointMtu)
 	if err != nil {
 		log.Errorf("Error setting link %s mtu. Err: %v", intfName, err)
 		return err
 	}
+
+	err = setLinkUp(intfName)
 
 	// Set the interface mac address
 	err = netutils.SetInterfaceMac(intfName, cfgEp.MacAddress)
@@ -395,6 +424,12 @@ func (sw *OvsSwitch) CreatePort(intfName string, cfgEp *mastercfg.CfgEndpointSta
 		EndpointGroupVlan: uint16(pktTag),
 		Dscp:              dscp,
 		HostPvtIP:         pvtIP,
+	}
+
+	// Add the local port to ofnet
+	if sw.ofnetAgent == nil {
+		log.Infof("Skipping adding localport to ofnet")
+		return nil
 	}
 
 	log.Infof("Adding local endpoint: {%+v}", endpoint)
@@ -712,6 +747,12 @@ func (sw *OvsSwitch) AddUplink(uplinkName string, intfList []string) error {
 		}
 
 		links = append(links, linkInfo)
+
+		err = setLinkMtu(intf, 9000);
+		if err != nil {
+			log.Errorf("Error setting up link %s mtu. Err: %v", intf, err)
+		}
+		err = setLinkUp(intf)
 	}
 	uplinkInfo.MbrLinks = links
 
@@ -868,6 +909,10 @@ func (sw *OvsSwitch) AddHostPort(intfName string, intfNum, network int, isHostNS
 	// Add to ofnet if this is the hostNS port.
 	netutils.SetInterfaceMac(intfName, macStr)
 	netutils.SetInterfaceIP(intfName, ipStr)
+	err = setLinkMtu(intfName, 9000);
+	if err != nil {
+		log.Errorf("Error setting host port link %s mtu. Err: %v", intfName, err)
+	}
 	err = setLinkUp(intfName)
 
 	if sw.ofnetAgent != nil {

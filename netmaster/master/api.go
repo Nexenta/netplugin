@@ -264,6 +264,8 @@ func AllocAddressHandler(w http.ResponseWriter, r *http.Request, vars map[string
 		IPv4Address: addr + "/" + fmt.Sprintf("%d", subnetLen),
 	}
 
+	log.Infof("Sending AddressAllocResponse: %+v", aresp)
+
 	return aresp, nil
 }
 
